@@ -1,4 +1,3 @@
-![Снимок экрана 2025-02-19 012342](https://github.com/user-attachments/assets/6b245bfb-0a2f-4608-ab0b-eda2ba018727)
 # Промежуточный веб-сервер для программы Libre Hardware Monitor
 Программа [Libre Hardware Monitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)  умеет создавать веб сервер с json с инфой о различных параметрах компьютера, такмих как температура загрузка итп <br> 
 единственная проблема, что файл получается очень большим, и микроконтроллерам например таким как esp, сложно его ворочить <br> 
