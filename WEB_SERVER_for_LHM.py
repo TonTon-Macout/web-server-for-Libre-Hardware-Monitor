@@ -60,9 +60,10 @@ def save_paths(paths_data):
 
 def load_settings():
     settings_file = "settings.json"
+    host = get_local_ip()  # Получаем IP компьютера
     default_settings = {
-        "lhm_url": "http://localhost:8085/data.json",
-        "server_url": "http://localhost:5001/filtered_data"
+        "lhm_url": f"http://{host}:8085/data.json",
+        "server_url": f"http://{host}:5001/filtered_data"
     }
     
     try:
@@ -931,12 +932,12 @@ class MainWindow(QWidget):
     def closeEvent(self, event):
         event.ignore()
         self.hide()
-        self.tray_icon.showMessage(
-            "Приложение свернуто",
-            "Приложение продолжает работать в трее",
-            QSystemTrayIcon.MessageIcon.Information,
-            2000
-        )
+        #self.tray_icon.showMessage(
+        #    "Приложение свернуто",
+        #    "Приложение продолжает работать в трее",
+        #    QSystemTrayIcon.MessageIcon.Information,
+        #    2000
+        # )
 
     def open_lhm_server(self):
         webbrowser.open(self.url_line.text())
