@@ -684,7 +684,7 @@ class AboutDialog(QDialog):
         about_text.setText(
             """
             <h2>Программа: Web Server for LHM</h2>
-            <p><b>Версия:</b> 0.2 beta</p>
+            <p><b>Версия:</b> 0.3 beta</p>
             <p><b>Автор:</b> Vanila</p>
             <p><b>Описание:</b> Промежуточный сервер для Libre Hardware Monitor. 
             <ul>
@@ -784,6 +784,7 @@ class MainWindow(QWidget):
     # label
         url_server_label = QLabel("Server URL:")
         self.url_server_line = QLineEdit()
+
         url_server = f"http://{local_ip}:5001/filtered_data"
         #self.url_server_line.setText(url_server)
         self.url_server_line.setText(settings["server_url"])  # Устанавливаем значение из настроек
@@ -1023,6 +1024,8 @@ class MainWindow(QWidget):
         else:
             self.stop_server()
 
+
+
     def start_server(self):
         global lhm_url
         lhm_url = self.url_line.text()
@@ -1032,6 +1035,13 @@ class MainWindow(QWidget):
             try:
                 # Извлекаем хост и порт из Server URL
                 host, port = extract_host_and_port(server_url)
+
+                # Если хост не указан или это localhost, используем IP компьютера
+                if host in ["localhost", "127.0.0.1", ""]:
+                    host = get_local_ip()  # Получаем IP компьютера
+
+                # Обновляем Server URL в интерфейсе
+                self.url_server_line.setText(f"http://{host}:{port}/filtered_data")
 
                 # Запускаем сервер с указанными хостом и портом
                 self.server_thread = FlaskServerThread(host, port)
@@ -1051,7 +1061,6 @@ class MainWindow(QWidget):
                     }
                 """)
                 self.open_browser_btn.setEnabled(True)
-                self.url_server_line.setEnabled(False)
                 self.open_browser_btn.setStyleSheet("""
                     QPushButton {
                         background-color: #4CAF50;
@@ -1064,11 +1073,14 @@ class MainWindow(QWidget):
                         background-color: #45a049;
                     }
                 """)
-                QMessageBox.information(self, "Info", f"Сервер запущен на {host}:{port}")
+                QMessageBox.information(self, "Info", f"Сервер запущен на {host}:{port}!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Ошибка при запуске сервера: {e}")
         else:
-            QMessageBox.critical(self, "Error", "Введите корректные URL.")
+            QMessageBox.critical(self, "Error", "Пожалуйста, введите корректные URL.")
+
+
+
 
     def stop_server(self):
         if self.server_thread:
