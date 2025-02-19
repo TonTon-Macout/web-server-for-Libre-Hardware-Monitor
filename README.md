@@ -1,7 +1,3 @@
-Конечно, давайте немного подправим и форматируем ваш README-файл:
-
----
-
 # Промежуточный веб-сервер для программы Libre Hardware Monitor
 
 Программа [Libre Hardware Monitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) умеет создавать веб-сервер с JSON с информацией о различных параметрах компьютера, таких как температура, загрузка и т. д. <br> 
