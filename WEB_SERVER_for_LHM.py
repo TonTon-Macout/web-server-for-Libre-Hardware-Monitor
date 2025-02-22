@@ -1,3 +1,6 @@
+VERSION = "0.04 beta"
+NAME = "WEB Server for LHM" 
+
 import sys
 import json
 import threading
@@ -670,22 +673,20 @@ class ParameterGroup(QWidget):
         }
 
 class AboutDialog(QDialog):
-    """Окно 'О программе'."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("О программе")
-        self.setFixedSize(400, 250)  # Увеличим размер окна для удобства
+        self.setFixedSize(400, 250)  # Размер окна
 
         # Layout для окна
         layout = QVBoxLayout()
 
-        # Текстовая информация с HTML-форматированием
         about_text = QTextBrowser()
         about_text.setOpenExternalLinks(True)  # Позволяет открывать ссылки в браузере
         about_text.setText(
-            """
-            <h2>Программа: Web Server for LHM</h2>
-            <p><b>Версия:</b> 0.3 beta</p>
+            f"""
+            <h2>Программа: {NAME}</h2>
+            <p><b>Версия:</b> {VERSION}</p>
             <p><b>Автор:</b> Vanila</p>
             <p><b>Описание:</b> Промежуточный сервер для Libre Hardware Monitor. 
             <ul>
@@ -710,10 +711,32 @@ class AboutDialog(QDialog):
         self.setLayout(layout)
 
 
+def resizeEvent(self, event):
+    super().resizeEvent(event) 
+
+    # Получаем текущий размер окна
+    new_size = event.size()
+    new_width = new_size.width()
+    new_height = new_size.height()
+
+    # Базовые размеры окна (изначальные)
+    base_width = 500
+    base_height = 750
+
+    # Рассчитываем масштаб на основе ширины или высоты
+    width_scale = new_width / base_width
+    height_scale = new_height / base_height
+
+    # Используем минимальный масштаб, чтобы сохранить пропорции
+    new_scale = min(width_scale, height_scale)
+
+    # Применяем новый масштаб к браузеру
+    self.browser.setZoomFactor(new_scale)    
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("WEB Server for LHM")
+        self.setWindowTitle(VERSION)
         self.server_running = False
         self.server_thread = None
         self.shutdown_thread = None
