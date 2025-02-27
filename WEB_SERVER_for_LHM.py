@@ -1,7 +1,9 @@
-VERSION = "0.04 beta"
-NAME = "WEB Server for LHM" 
-
+VERSION = "0.08 beta"
+NAME = "WEB_Server_for_LHM" 
+import win32com.client
+from pythoncom import CoInitialize, CoUninitialize
 import sys
+import time
 import json
 import threading
 import requests
@@ -63,16 +65,22 @@ def save_paths(paths_data):
 
 def load_settings():
     settings_file = "settings.json"
-    host = get_local_ip()  # Получаем IP компьютера
+    ip_list = get_all_local_ips()
+    host = get_most_likely_ip(ip_list)
     default_settings = {
         "lhm_url": f"http://{host}:8085/data.json",
-        "server_url": f"http://{host}:5001/filtered_data"
+        "server_url": f"http://{host}:5001/filtered_data",
+        "autostart": False,
+        "debug": False  # По умолчанию отладка выключена
     }
     
     try:
         with open(settings_file, "r", encoding="utf-8") as file:
             settings = json.load(file)
             if settings:
+                # Убеждаемся, что "debug" есть в настройках
+                if "debug" not in settings:
+                    settings["debug"] = False
                 return settings
             return default_settings
     except (FileNotFoundError, json.JSONDecodeError):
@@ -84,7 +92,6 @@ def save_settings(lhm_url, server_url):
         "lhm_url": lhm_url,
         "server_url": server_url
     }
-    
     with open(settings_file, "w", encoding="utf-8") as file:
         json.dump(settings, file, ensure_ascii=False, indent=4)
 
@@ -92,13 +99,15 @@ def save_settings(lhm_url, server_url):
 def get_data_from_lhm(url):
     global error
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=5)
         response.raise_for_status()  # Проверка на ошибки HTTP
         data = response.json()
+        error = ""  # Очищаем ошибку, если всё успешно
         return data
     except requests.exceptions.RequestException as e:
-        error = f"Error when receiving data from LHM: {e}"
-        return None
+        error = f"LHM сервер недоступен: {str(e)}"
+        return None  # Возвращаем None, но с описанием ошибки в глобальной переменной error
+
 
 def extract_value(data, path):
     try:
@@ -120,14 +129,17 @@ def filter_data(data, paths):
 @app.route('/filtered_data', methods=['GET'])
 def get_filtered_data():
     data = get_data_from_lhm(lhm_url)
-    # Получаем имя и путь параметра из интерфейса 
     paths_dict = ui.get_filtered_data()
-    filtered_data = filter_data(data, paths_dict)
-
-    if filtered_data["ERROR"]:
-        with open("error_log.json", "w", encoding="utf-8") as error_file:
-            json.dump({"error": filtered_data["ERROR"]}, error_file, ensure_ascii=False, indent=4)
-    return jsonify(filtered_data)
+    
+    if data is None:
+        # Если LHM недоступен, возвращаем JSON с ошибкой
+        return jsonify({"ERROR": error or "LHM сервер недоступен, данные отсутствуют"}), 503  # 503 Service Unavailable
+    else:
+        filtered_data = filter_data(data, paths_dict)
+        if filtered_data["ERROR"]:
+            with open("error_log.json", "w", encoding="utf-8") as error_file:
+                json.dump({"error": filtered_data["ERROR"]}, error_file, ensure_ascii=False, indent=4)
+        return jsonify(filtered_data)
 
 
 
@@ -158,15 +170,33 @@ def extract_host_and_port(url):
         port = parsed_url.port or 5001  # Если порт не указан, используем 5001 по умолчанию
         return host, port    
 
-def get_local_ip():
+import psutil  # Добавьте этот импорт в начало файла, если его там нет
+
+def get_all_local_ips():
+    """Возвращает список всех локальных IP-адресов с помощью psutil."""
+    ip_list = []
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
+        # Получаем информацию о сетевых интерфейсах
+        interfaces = psutil.net_if_addrs()
+        for interface_name, addresses in interfaces.items():
+            for address in addresses:
+                # Проверяем, что это IPv4 и не link-local (169.254.x.x)
+                if address.family == socket.AF_INET and not address.address.startswith("169.254"):
+                    if address.address != "127.0.0.1":  # Исключаем loopback, если есть другие варианты
+                        ip_list.append(address.address)
+                    elif not ip_list:  # Добавляем 127.0.0.1 только если других нет
+                        ip_list.append(address.address)
+    except Exception as e:
+        print(f"Ошибка при получении IP-адресов: {e}")
+        ip_list.append("127.0.0.1")  # Запасной вариант
+    return ip_list
+
+def get_most_likely_ip(ip_list):
+    """Возвращает наиболее вероятный IP-адрес (первый не-loopback, иначе 127.0.0.1)."""
+    for ip in ip_list:
+        if ip != "127.0.0.1":
+            return ip
+    return ip_list[0] if ip_list else "127.0.0.1"
 
 
 
@@ -183,6 +213,11 @@ def convert_path_to_json_format(path):
 
 def copy_example_sketch():
     try:
+        # Проверяем, существует ли файл paths.json
+        if not os.path.exists(paths_file):
+            QMessageBox.warning(ui, "Warning", "Файл paths.json не найден. Пожалуйста, добавьте и сохраните параметры перед созданием скетча.")
+            return
+        
         with open(paths_file, "r", encoding="utf-8") as file:
             paths = json.load(file)
         
@@ -193,6 +228,9 @@ def copy_example_sketch():
         # Получаем WiFi данные
         wifi_ssid = ui.ssid_line.text()
         wifi_pass = ui.pass_line.text()
+        
+        # Вычисляем IP-адрес для serverUrl
+        server_ip = get_most_likely_ip(get_all_local_ips())
         
         # Формируем объявления переменных
         variables_declaration = ""
@@ -210,17 +248,14 @@ def copy_example_sketch():
             elif data_type in ["long", "double"]:
                 conversion = f".to{data_type.capitalize()}()"
             
-            # Объявление переменной
             variables_declaration += f"{data_type} pc_{param_name};\n"
-            
-            # Присвоение значения
             variables_assignment += f"""        // Получаем {param_name}
         String {param_name}_str = doc["{param_name}"];
         pc_{param_name} = {param_name}_str{conversion};
         Serial.print("{param_name}: ");
         Serial.println(pc_{param_name});\n"""
 
-        # Формируем полный скетч
+        # Формируем полный скетч, используя только f-строки
         sketch_code = f"""/*
    Скетч для мониторинга параметров ПК через LibreHardwareMonitor
    для ESP8266 и ESP32
@@ -243,7 +278,7 @@ def copy_example_sketch():
 // Настройки WiFi
 const char* ssid = "{wifi_ssid}";  // Имя WiFi сети
 const char* password = "{wifi_pass}";     // Пароль от WiFi сети
-const char* serverUrl = "http://{get_local_ip()}:5001/filtered_data";  // URL сервера с данными
+const char* serverUrl = "http://{server_ip}:5001/filtered_data";  // URL сервера с данными
 #define UPDATE_INTERVAL 10000  // Интервал обновления данных (10 секунд)
 #define HTTP_TIMEOUT 10000     // 10 секунд
 #define MAX_HTTP_RETRIES 5     // Максимальное количество попыток
@@ -417,6 +452,9 @@ void loop() {{
   }}
 }}
 """
+        # Подставляем значения напрямую в f-строку
+        sketch_code = sketch_code.replace("{wifi_ssid}", wifi_ssid).replace("{wifi_pass}", wifi_pass).replace("{server_ip}", server_ip)
+
         clipboard = QApplication.clipboard()
         clipboard.setText(sketch_code)
         QMessageBox.information(ui, "Info", "Скетч скопирован в буфер обмена.")
@@ -735,35 +773,56 @@ def resizeEvent(self, event):
 
 class MainWindow(QWidget):
     def __init__(self):
+        # Проверяем, запущена ли программа через автозагрузку
+        is_autostart = "--autostart" in sys.argv
+        if is_autostart:
+            print("Запуск через автозагрузку, добавляем задержку 10 секунд")
+            time.sleep(10)
+
         super().__init__()
-        self.setWindowTitle(VERSION)
+        self.setWindowTitle(NAME)
         self.server_running = False
         self.server_thread = None
         self.shutdown_thread = None
         self.parameter_groups = []
+        self.is_closing = False
+        
         self.shared_memory = QSharedMemory("WebServerForLHM")
         if not self.shared_memory.create(1):
-            QMessageBox.critical(None, "Ошибка", "Приложение уже запущено!")
-            self.shared_memory.attach()
-            buffer = QBuffer()
-            buffer.open(QIODevice.OpenModeFlag.ReadWrite)
-            self.shared_memory.lock()
-            buffer.setData(self.shared_memory.data())
-            buffer.seek(0)
-            stream = QDataStream(buffer)
-            stream.readBool()
-            self.shared_memory.unlock()
+            if not is_autostart:
+                QMessageBox.critical(None, "Ошибка", "Приложение уже запущено!")
+            else:
+                print("Приложение уже запущено, завершаем автозапуск")
+                with open("debug.log", "a", encoding='utf-8') as f:
+                    f.write(f"Приложение уже запущено, автозапуск отменён: {time.ctime()}\n")
             sys.exit(1)
-        # Минимальный размер окна
-        self.setMinimumSize(600, 800)  # Ширина , Высота
+
+        self.setMinimumSize(500, 600)
         self.initUI()
         self.create_tray_icon()
+
+        # Запускаем сервер при автозапуске
+        if is_autostart and not self.server_running:
+            print("Автозапуск сервера")
+            server_thread = Thread(target=self.start_server, daemon=True)
+            server_thread.start()
+            # Даём время серверу стартовать перед продолжением
+            time.sleep(2)
+
 
     def initUI(self):
         self.main_layout = QVBoxLayout()
 
         # Загружаем настройки
         settings = load_settings()
+         # Чекбокс "при старте"
+        self.autostart_cb = QCheckBox("автозапуск")
+        self.autostart_cb.stateChanged.connect(self.toggle_autostart)
+        # Проверяем наличие задачи при запуске и синхронизируем чекбокс
+        real_autostart = self.check_autostart_status()
+        self.autostart_cb.setChecked(real_autostart)
+        if settings.get("autostart") != real_autostart:
+            self.save_autostart_setting(real_autostart)
 
 # первая строчка
 
@@ -772,16 +831,24 @@ class MainWindow(QWidget):
         self.always_on_top_cb = QCheckBox("поверх")  
         self.always_on_top_cb.stateChanged.connect(self.toggle_always_on_top)
         
-    # Разделитель
+        # Разделитель
         spacer = QWidget()
         spacer.setFixedSize(28, 0)
 
-     # URL поле LHM
-        url_label = QLabel("LHM URL:") # название поля
-        self.url_line = QLineEdit()
-        local_ip = get_local_ip()
-        url = f"http://{local_ip}:8085/data.json"
-        self.url_line.setText(url)
+       # URL поле LHM как выпадающий список
+        url_label = QLabel("LHM URL:")
+        self.url_line = QComboBox()  # Используем QComboBox вместо QLineEdit
+        self.url_line.setEditable(True)  # Разрешаем редактирование вручную
+        #self.url_line.setMinimumWidth(200)  # Устанавливаем минимальную ширину для видимости
+        ip_list = get_all_local_ips()  # Получаем все IP-адреса
+        most_likely_ip = get_most_likely_ip(ip_list)
+        # Добавляем варианты в выпадающий список
+        self.url_line.addItems([f"http://{ip}:8085/data.json" for ip in ip_list])
+        # Устанавливаем начальное значение
+        self.url_line.setCurrentText(f"http://{most_likely_ip}:8085/data.json")
+
+    # Диагностика: выводим список IP-адресов в консоль
+        print("Доступные IP-адреса:", ip_list)
         
     # Кнопка "Открыть LHM сервер"
         self.open_lhm_server_btn = QPushButton("Открыть")
@@ -790,29 +857,27 @@ class MainWindow(QWidget):
         # Добавляем виджеты в layout
         url_layout = QHBoxLayout()# layout для URL и чекбокса поверх
         ###
+        url_layout = QHBoxLayout()
         url_layout.addWidget(self.always_on_top_cb)
         url_layout.addWidget(spacer)
         url_layout.addWidget(url_label)
-        url_layout.addWidget(self.url_line)        
+        url_layout.addWidget(self.url_line, stretch=1) 
         url_layout.addWidget(self.open_lhm_server_btn)
        
         self.main_layout.addLayout(url_layout) # Добавляем в основной
 
 # вторая строчка
-        
-    # ссылка
-        label_parse = QLabel()
-        label_parse.setText('<a href="https://jsonformatter.org/json-parser">jsonformatter.org</a>')
-        label_parse.setOpenExternalLinks(True)  # Открывать ссылки в браузере
+    # Чекбокс "при старте"
+
+        # Загружаем состояние из настроек
+        self.autostart_cb.setChecked(settings.get("autostart", False))                
+
         
     # label
         url_server_label = QLabel("Server URL:")
         self.url_server_line = QLineEdit()
-
-        url_server = f"http://{local_ip}:5001/filtered_data"
-        #self.url_server_line.setText(url_server)
-        self.url_server_line.setText(settings["server_url"])  # Устанавливаем значение из настроек
-        
+        url_server = f"http://{most_likely_ip}:5001/filtered_data"  # Используем тот же IP для сервера
+        self.url_server_line.setText(settings.get("server_url", url_server))
     # Открыть    
         self.open_browser_btn = QPushButton("Открыть")
         self.open_browser_btn.clicked.connect(self.open_browser)
@@ -823,7 +888,7 @@ class MainWindow(QWidget):
         # Добавляем виджеты в layout
         url_server_layout = QHBoxLayout() # 
         ###
-        url_server_layout.addWidget(label_parse)
+        url_server_layout.addWidget(self.autostart_cb)
         url_server_layout.addWidget(url_server_label)
         url_server_layout.addWidget(self.url_server_line)
         url_server_layout.addWidget(self.open_browser_btn)
@@ -832,7 +897,8 @@ class MainWindow(QWidget):
 
 
 # третья строчка 
-        
+
+
     # кнопка 
         self.start_stop_btn = QPushButton("Запустить")
         self.start_stop_btn.clicked.connect(self.toggle_server)
@@ -863,14 +929,17 @@ class MainWindow(QWidget):
         self.main_layout.addLayout(btn_layout) # 
 
 # Третья строчка
-
+    # ссылка
+        label_parse = QLabel()
+        label_parse.setText('<a href="https://jsonformatter.org/json-parser">jsonformatter.org</a>')
+        label_parse.setOpenExternalLinks(True)  # Открывать ссылки в браузере
     # label
-        ssid_label = QLabel("*WiFi SSID:")
+        ssid_label = QLabel("*WiFi:")
     # ssid
         self.ssid_line = QLineEdit()
         self.ssid_line.setPlaceholderText("Введите имя WiFi сети")
     # Пароль
-        pass_label = QLabel("*Пароль:")
+        pass_label = QLabel("")
         self.pass_line = QLineEdit()
         self.pass_line.setPlaceholderText("Введите пароль WiFi")
         self.pass_line.setEchoMode(QLineEdit.EchoMode.Password)
@@ -878,6 +947,7 @@ class MainWindow(QWidget):
         # Добавляем виджеты в layout
         wifi_layout = QHBoxLayout()       
         ###
+        wifi_layout.addWidget(label_parse)
         wifi_layout.addWidget(ssid_label)
         wifi_layout.addWidget(self.ssid_line)       
         wifi_layout.addWidget(pass_label)
@@ -916,13 +986,196 @@ class MainWindow(QWidget):
         self.main_layout.addWidget(add_param_btn)
 
         self.setLayout(self.main_layout)
-    
-    def save_settings(self):
-        lhm_url = self.url_line.text()
-        server_url = self.url_server_line.text()
 
+
+    def check_server_status(self):
+        """Проверяет, работает ли сервер, пытаясь сделать запрос к filtered_data"""
+        server_url = self.url_server_line.text() if hasattr(self, 'url_server_line') else "http://localhost:5001/filtered_data"
+        try:
+            response = requests.get(server_url, timeout=2)
+            if response.status_code == 200:
+                print(f"Сервер доступен на {server_url}")
+                return True
+            else:
+                print(f"Сервер вернул код {response.status_code}")
+                return False
+        except requests.RequestException as e:
+            print(f"Сервер не отвечает: {e}")
+            return False
+
+
+    def show(self):
+        if self.server_running:
+            self.start_stop_btn.setText("Остановить")
+            self.start_stop_btn.setEnabled(True)
+            self.start_stop_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ff4444;
+                    color: white;
+                    padding: 5px;
+                    border: none;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #ff6666;
+                }
+            """)
+            self.open_browser_btn.setEnabled(True)
+            self.open_browser_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    padding: 5px;
+                    border: none;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+            """)
+        else:
+            self.start_stop_btn.setText("Запустить")
+            self.start_stop_btn.setEnabled(True)
+            self.start_stop_btn.setStyleSheet("")
+            self.open_browser_btn.setEnabled(False)
+            self.open_browser_btn.setStyleSheet("")
+        
+        super().show()
+
+
+
+    def check_autostart_status(self):
+        import win32com.client
+        from pythoncom import CoInitialize, CoUninitialize
+
+        task_name = "WEB_Server_for_LHM_Autostart"
+        CoInitialize()
+        try:
+            scheduler = win32com.client.Dispatch("Schedule.Service")
+            scheduler.Connect()
+            folder = scheduler.GetFolder("\\")
+            folder.GetTask(task_name)
+            CoUninitialize()
+            return True
+        except Exception:
+            CoUninitialize()
+            return False
+
+
+    def toggle_autostart(self, state):
+        import os
+        import win32com.client
+        from pythoncom import CoInitialize, CoUninitialize
+
+        app_path = os.path.abspath(sys.argv[0])  # Путь к .exe
+        app_dir = os.path.dirname(app_path)  # Папка с .exe
+        print(f"Проверяемый путь: {app_path}")
+        if not os.path.exists(app_path):
+            QMessageBox.warning(self, "Warning", f"Файл не найден: {app_path}")
+            self.autostart_cb.setChecked(False)
+            self.save_autostart_setting(False)
+            return
+
+        task_name = "WEB_Server_for_LHM_Autostart"
+        current_user = os.getlogin()
+        task_exists = self.check_autostart_status()
+
+        CoInitialize()
+        try:
+            scheduler = win32com.client.Dispatch("Schedule.Service")
+            scheduler.Connect()
+
+            if state == Qt.CheckState.Checked.value:
+                if not task_exists:
+                    try:
+                        print("Создание новой задачи...")
+                        task_def = scheduler.NewTask(0)
+
+                        print("Настройка триггера...")
+                        trigger = task_def.Triggers.Create(9)  # TASK_TRIGGER_LOGON
+                        trigger.UserId = current_user
+                        print(f"Триггер настроен для пользователя: {current_user}")
+
+                        print("Настройка действия...")
+                        action = task_def.Actions.Create(0)  # TASK_ACTION_EXEC
+                        action.Path = app_path
+                        action.Arguments = "--autostart"
+                        action.WorkingDirectory = app_dir  # Указываем рабочую директорию
+                        print(f"Действие настроено: {app_path} --autostart")
+                        print(f"Рабочая директория: {app_dir}")
+
+                        print("Настройка параметров задачи...")
+                        task_def.Settings.Enabled = True
+                        print("Enabled = True")
+
+                        print("Регистрация задачи...")
+                        folder = scheduler.GetFolder("\\")
+                        folder.RegisterTaskDefinition(
+                            task_name, task_def, 6, None, None, 0  # TASK_CREATE_OR_UPDATE, TASK_LOGON_NONE
+                        )
+                        print("Задача успешно зарегистрирована")
+                        with open("debug.log", "a", encoding='utf-8') as f:
+                            f.write(f"Задача добавлена: {time.ctime()}\n")
+                        QMessageBox.information(self, "Info", "Задача автозапуска создана.")
+                    except Exception as e:
+                        error_msg = f"Ошибка создания задачи: {str(e)}"
+                        print(error_msg)
+                        QMessageBox.warning(self, "Warning", error_msg)
+                        self.autostart_cb.setChecked(False)
+                        self.save_autostart_setting(False)
+                        return
+                else:
+                    print("Задача уже существует, ничего не делаем")
+            else:
+                if task_exists:
+                    try:
+                        print("Удаление задачи...")
+                        folder = scheduler.GetFolder("\\")
+                        folder.DeleteTask(task_name, 0)
+                        print("Задача успешно удалена")
+                        with open("debug.log", "a", encoding='utf-8') as f:
+                            f.write(f"Задача удалена: {time.ctime()}\n")
+                        QMessageBox.information(self, "Info", "Задача автозапуска удалена.")
+                    except Exception as e:
+                        error_msg = f"Ошибка удаления задачи: {str(e)}"
+                        print(error_msg)
+                        QMessageBox.warning(self, "Warning", error_msg)
+                        self.autostart_cb.setChecked(True)
+                        self.save_autostart_setting(True)
+                        return
+                else:
+                    print("Задачи нет, ничего не делаем")
+        except Exception as e:
+            error_msg = f"Ошибка подключения к Task Scheduler: {str(e)}"
+            print(error_msg)
+            QMessageBox.warning(self, "Warning", error_msg)
+            return
+        finally:
+            CoUninitialize()
+
+        self.save_autostart_setting(state == Qt.CheckState.Checked.value)
+
+
+
+    def save_autostart_setting(self, autostart_state):
+        settings = load_settings()  # Загружаем текущие настройки
+        settings["autostart"] = autostart_state  # Обновляем только autostart
+        with open("settings.json", "w", encoding="utf-8") as file:
+            json.dump(settings, file, ensure_ascii=False, indent=4)
+        print(f"Состояние автозагрузки сохранено: {autostart_state}")
+  
+    def save_settings(self):
+        lhm_url = self.url_line.currentText()
+        server_url = self.url_server_line.text()
+        autostart = self.autostart_cb.isChecked()  # Учитываем текущее состояние чекбокса
         if lhm_url and server_url:
-            save_settings(lhm_url, server_url)
+            settings = {
+                "lhm_url": lhm_url,
+                "server_url": server_url,
+                "autostart": autostart
+            }
+            with open("settings.json", "w", encoding="utf-8") as file:
+                json.dump(settings, file, ensure_ascii=False, indent=4)
             QMessageBox.information(self, "Info", "Настройки сохранены успешно.")
         else:
             QMessageBox.warning(self, "Warning", "Пожалуйста, заполните оба поля.")
@@ -931,39 +1184,73 @@ class MainWindow(QWidget):
             about_dialog = AboutDialog()
             about_dialog.exec()
 
+
     def create_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon("icon.png"))  
-
-        tray_menu = QMenu(self)
+    
+        self.tray_menu = QMenu(self)
+    
         restore_action = QAction("Развернуть", self)
         restore_action.triggered.connect(self.show)
-        tray_menu.addAction(restore_action)
-
+        self.tray_menu.addAction(restore_action)
+    
+        self.server_action = QAction("Запустить сервер", self)
+        self.server_action.triggered.connect(self.toggle_server_from_tray)
+        self.tray_menu.addAction(self.server_action)
+    
         quit_action = QAction("Выход", self)
-        quit_action.triggered.connect(QApplication.instance().quit)
-        tray_menu.addAction(quit_action)
-
-        self.tray_icon.setContextMenu(tray_menu)
+        quit_action.triggered.connect(self.quit_application)  # Уже вызывает правильный метод
+        self.tray_menu.addAction(quit_action)
+    
+        self.tray_icon.setContextMenu(self.tray_menu)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.show()
+        self.update_tray_menu()
+
+
+    def update_tray_menu(self):
+        if self.server_running:
+            self.server_action.setText("Остановить сервер")
+        else:
+            self.server_action.setText("Запустить сервер")
+   
+    def toggle_server_from_tray(self):
+        if self.server_running:
+            self.stop_server()
+        else:
+            self.start_server()   
+
+    def stop_server_from_tray(self):
+        if self.server_running:
+            self.stop_server()
 
     def on_tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.show()
 
     def closeEvent(self, event):
-        event.ignore()
-        self.hide()
-        #self.tray_icon.showMessage(
-        #    "Приложение свернуто",
-        #    "Приложение продолжает работать в трее",
-        #    QSystemTrayIcon.MessageIcon.Information,
-        #    2000
-        # )
-
+        if not self.is_closing:
+            if self.server_running:
+                # Если сервер запущен, сворачиваем в трей
+                event.ignore()
+                self.hide()
+                tooltip = ToolTip(
+                    "Сервер запущен",
+                    "Приложение свернуто в трей<br>Cервер продолжает работать.",
+                    self
+                )
+                QTimer.singleShot(100, lambda: tooltip.show_near_tray(self.tray_icon))
+            else:
+                # Если сервер не запущен, закрываем приложение полностью
+                self.is_closing = True
+                event.accept()  # Разрешаем закрытие
+                QApplication.instance().quit()  # Завершаем приложение
+        else:
+            event.accept()  # Если is_closing уже True, закрываем
+   
     def open_lhm_server(self):
-        webbrowser.open(self.url_line.text())
+        webbrowser.open(self.url_line.currentText())  # Заменяем text() на currentText()
 
     def toggle_always_on_top(self, state):
         if state == Qt.CheckState.Checked.value:
@@ -1050,28 +1337,77 @@ class MainWindow(QWidget):
 
 
 
+
     def start_server(self):
         global lhm_url
-        lhm_url = self.url_line.text()
+        lhm_url = self.url_line.currentText()
         server_url = self.url_server_line.text()
+        is_autostart = "--autostart" in sys.argv
+        settings = load_settings()
+        debug_enabled = settings.get("debug", False)  # Читаем настройку "debug"
+        
+        if debug_enabled:
+            print("Начало запуска сервера...")
+            with open("debug.log", "a", encoding='utf-8') as f:
+                f.write(f"Начало запуска сервера: {time.ctime()}\n")
 
         if lhm_url and server_url:
+            if debug_enabled:
+                print(f"Проверка доступности LHM на {lhm_url}...")
             try:
-                # Извлекаем хост и порт из Server URL
+                response = requests.get(lhm_url, timeout=5)
+                if response.status_code != 200:
+                    raise Exception(f"Код {response.status_code}")
+                if debug_enabled:
+                    print("LHM сервер доступен")
+                    with open("debug.log", "a", encoding='utf-8') as f:
+                        f.write(f"LHM сервер доступен: {time.ctime()}\n")
+            except requests.RequestException as e:
+                error_msg = f"Сервер LHM не запущен по адресу {lhm_url}. Проверьте, запущен ли он, и попробуйте снова."
+                if debug_enabled:
+                    print(error_msg)
+                    with open("debug.log", "a", encoding='utf-8') as f:
+                        f.write(f"Ошибка: {str(e)} - {time.ctime()}\n")
+                if not is_autostart:
+                    msg_box = QMessageBox(self)
+                    msg_box.setWindowTitle("Ошибка")
+                    msg_box.setText(error_msg)
+                    msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Ignore)
+                    ok_button = msg_box.button(QMessageBox.StandardButton.Ok)
+                    ok_button.setText("ОК")
+                    ignore_button = msg_box.button(QMessageBox.StandardButton.Ignore)
+                    ignore_button.setText("Запустить всё равно")
+                    msg_box.setDefaultButton(QMessageBox.StandardButton.Ok)
+                    result = msg_box.exec()
+                    if result == QMessageBox.StandardButton.Ok:
+                        return
+                    if debug_enabled:
+                        print("Пользователь выбрал запуск несмотря на ошибку LHM")
+                        with open("debug.log", "a", encoding='utf-8') as f:
+                            f.write(f"Запуск сервера несмотря на недоступность LHM: {time.ctime()}\n")
+                else:
+                    if debug_enabled:
+                        print("Прерываем запуск сервера из-за недоступности LHM")
+                    return
+
+            try:
                 host, port = extract_host_and_port(server_url)
-
-                # Если хост не указан или это localhost, используем IP компьютера
                 if host in ["localhost", "127.0.0.1", ""]:
-                    host = get_local_ip()  # Получаем IP компьютера
-
-                # Обновляем Server URL в интерфейсе
+                    host = get_most_likely_ip(get_all_local_ips())
                 self.url_server_line.setText(f"http://{host}:{port}/filtered_data")
-
-                # Запускаем сервер с указанными хостом и портом
+                
                 self.server_thread = FlaskServerThread(host, port)
+                self.server_thread.daemon = True
                 self.server_thread.start()
                 self.server_running = True
+                
+                if debug_enabled:
+                    print("Серверный поток запущен")
+                    with open("debug.log", "a", encoding='utf-8') as f:
+                        f.write(f"Серверный поток запущен: {time.ctime()}\n")
+                
                 self.start_stop_btn.setText("Остановить")
+                self.start_stop_btn.setEnabled(True)
                 self.start_stop_btn.setStyleSheet("""
                     QPushButton {
                         background-color: #ff4444;
@@ -1097,22 +1433,58 @@ class MainWindow(QWidget):
                         background-color: #45a049;
                     }
                 """)
-                QMessageBox.information(self, "Info", f"Сервер запущен на {host}:{port}!")
+                self.update_tray_menu()
+                
+                if not is_autostart:
+                    QMessageBox.information(self, "Info", f"Сервер запущен на {host}:{port}!")
+                else:
+                    if debug_enabled:
+                        print(f"Сервер запущен на {host}:{port} (автозапуск)")
+                        with open("debug.log", "a", encoding='utf-8') as f:
+                            f.write(f"Сервер запущен (автозапуск): {time.ctime()}\n")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Ошибка при запуске сервера: {e}")
+                error_msg = f"Ошибка при запуске сервера: {str(e)}"
+                if debug_enabled:
+                    print(error_msg)
+                    with open("debug.log", "a", encoding='utf-8') as f:
+                        f.write(f"{error_msg} - {time.ctime()}\n")
+                if not is_autostart:
+                    QMessageBox.critical(self, "Error", error_msg)
         else:
-            QMessageBox.critical(self, "Error", "Пожалуйста, введите корректные URL.")
+            error_msg = "Ошибка: некорректные URL при запуске сервера"
+            if debug_enabled:
+                print(error_msg)
+                with open("debug.log", "a", encoding='utf-8') as f:
+                    f.write(f"{error_msg} - {time.ctime()}\n")
+            if not is_autostart:
+                QMessageBox.critical(self, "Error", "Пожалуйста, введите корректные URL.")
 
 
-
-
-    def stop_server(self):
-        if self.server_thread:
-            self.shutdown_thread = ServerShutdownThread(self.server_thread)
-            self.shutdown_thread.finished.connect(self.on_server_stopped)
-            self.shutdown_thread.error.connect(self.on_stop_error)
-            self.shutdown_thread.start()
-            self.start_stop_btn.setEnabled(False)  # Блокируем кнопку 
+    def on_server_stopped(self):
+        self.server_running = False
+        self.start_stop_btn.setEnabled(True)
+        self.start_stop_btn.setText("Запустить")
+        self.start_stop_btn.setStyleSheet("")
+        self.open_browser_btn.setEnabled(False)
+        self.open_browser_btn.setStyleSheet("")
+        self.server_thread = None
+        self.shutdown_thread = None
+        self.update_tray_menu()
+        if "--autostart" not in sys.argv:
+            QMessageBox.information(self, "Info", "Сервер остановлен.")
+        else:
+            print("Сервер остановлен (автозапуск)")
+            with open("debug.log", "a", encoding='utf-8') as f:
+                f.write(f"Сервер остановлен (автозапуск): {time.ctime()}\n")
+    
+    
+    def quit_application(self):
+        self.is_closing = True  # Устанавливаем флаг закрытия
+        if self.server_running:
+            self.stop_server()  # Останавливаем сервер, если он запущен
+            if self.shutdown_thread:
+                self.shutdown_thread.wait(2000)  # Ждём завершения потока остановки
+        QApplication.instance().quit()  # Завершаем приложение
 
     def on_server_stopped(self):
         self.server_running = False
@@ -1132,6 +1504,74 @@ class MainWindow(QWidget):
     def on_stop_error(self, error_message):
         self.start_stop_btn.setEnabled(True)
         QMessageBox.warning(self, "Warning", f"Ошибка при остановке сервера: {error_message}")
+
+    def stop_server(self):
+        if self.server_thread:
+            self.shutdown_thread = ServerShutdownThread(self.server_thread)
+            self.shutdown_thread.finished.connect(self.on_server_stopped)
+            self.shutdown_thread.error.connect(self.on_stop_error)
+            self.shutdown_thread.start()
+            self.start_stop_btn.setEnabled(False)
+
+
+
+class ToolTip(QWidget):
+    def __init__(self, title, message, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        layout = QVBoxLayout()
+        combined_label = QLabel(f"<b>{title}</b><br> {message}")
+        combined_label.setWordWrap(True)
+        layout.addWidget(combined_label)
+        self.setLayout(layout)
+        self.setMinimumWidth(250)  
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #FFFFE0;
+                border: 1px solid #DAA520;
+                border-radius: 5px;
+                padding: 5px;
+            }
+            QLabel {
+                color: black;
+            }
+        """)
+
+        QTimer.singleShot(3000, self.hide)
+
+    def show_near_tray(self, tray_icon):
+        # Получаем геометрию трея
+        tray_geometry = tray_icon.geometry()
+        offset = 120  # Смещение влево 
+        if not tray_geometry.isValid() or tray_geometry.x() == 0 and tray_geometry.y() == 0:
+            # Если геометрия недействительна, используем экранный подход
+            screen = QApplication.primaryScreen()
+            screen_geometry = screen.availableGeometry()
+            x = screen_geometry.width() - self.width() - 10 - offset  # Смещаем левее
+            y = screen_geometry.height() - self.height() - 40 - 20
+        else:
+            # Используем координаты трея
+            screen = QApplication.screenAt(tray_geometry.center())
+            screen_geometry = screen.availableGeometry()
+            x = tray_geometry.x() - offset  # Смещаем левее от иконки трея
+            y = tray_geometry.y() - self.height()  # Над иконкой
+            # Корректируем положение, если выходит за пределы
+            if y < screen_geometry.top():
+                y = tray_geometry.bottom()  # Под иконкой
+            if x + self.width() > screen_geometry.right():
+                x = screen_geometry.right() - self.width()
+            elif x < screen_geometry.left():
+                x = screen_geometry.left()  # Не даём выйти за левый край
+
+        self.move(x, y)
+        self.show()
+
+
+
+
+
 
 def copy_variables_code():
     try:
@@ -1168,7 +1608,18 @@ def copy_variables_code():
         QMessageBox.warning(ui, "Warning", f"Ошибка при копировании кода переменных: {e}")
 
 if __name__ == '__main__':
+    import sys
+    import time
+    from threading import Thread
+
+    is_autostart = "--autostart" in sys.argv
     app_qt = QApplication(sys.argv)
+
     ui = MainWindow()
-    ui.show()
+
+    if is_autostart:
+        print("Запуск через автозагрузку, программа остаётся вトレе")
+    else:
+        ui.show()
+
     sys.exit(app_qt.exec())
