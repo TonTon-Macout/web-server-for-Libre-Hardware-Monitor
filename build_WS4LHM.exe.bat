@@ -75,10 +75,11 @@ if %errorlevel% neq 0 (
 REM Копирование дополнительных файлов в созданную папку
 echo Копируем дополнительные файлы...
 copy "icon.ico" "%dir_name%"
-copy "minimize.png" "%dir_name%"
-copy "refresh.png" "%dir_name%"
-copy "scan.png" "%dir_name%"
-copy "close.png" "%dir_name%"
+copy "icon.png" "%dir_name%"
+REM copy "minimize.png" "%dir_name%"
+REM copy "refresh.png" "%dir_name%"
+REM copy "scan.png" "%dir_name%"
+REM copy "close.png" "%dir_name%"
 
 REM Удаляем временную папку dist
 rmdir /s /q dist
