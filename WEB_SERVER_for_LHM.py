@@ -12,7 +12,7 @@ import webbrowser
 import os
 from flask import Flask, jsonify, request
 from werkzeug.serving import make_server
-
+import psutil  
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QMessageBox, QScrollArea, QGroupBox, 
@@ -170,7 +170,7 @@ def extract_host_and_port(url):
         port = parsed_url.port or 5001  # Если порт не указан, используем 5001 по умолчанию
         return host, port    
 
-import psutil  # Добавьте этот импорт в начало файла, если его там нет
+
 
 def get_all_local_ips():
     """Возвращает список всех локальных IP-адресов с помощью psutil."""
@@ -255,7 +255,7 @@ def copy_example_sketch():
         Serial.print("{param_name}: ");
         Serial.println(pc_{param_name});\n"""
 
-        # Формируем полный скетч, используя только f-строки
+        # Формируем полный скетч
         sketch_code = f"""/*
    Скетч для мониторинга параметров ПК через LibreHardwareMonitor
    для ESP8266 и ESP32
@@ -1200,7 +1200,7 @@ class MainWindow(QWidget):
         self.tray_menu.addAction(self.server_action)
     
         quit_action = QAction("Выход", self)
-        quit_action.triggered.connect(self.quit_application)  # Уже вызывает правильный метод
+        quit_action.triggered.connect(self.quit_application)  
         self.tray_menu.addAction(quit_action)
     
         self.tray_icon.setContextMenu(self.tray_menu)
@@ -1250,7 +1250,7 @@ class MainWindow(QWidget):
             event.accept()  # Если is_closing уже True, закрываем
    
     def open_lhm_server(self):
-        webbrowser.open(self.url_line.currentText())  # Заменяем text() на currentText()
+        webbrowser.open(self.url_line.currentText()) 
 
     def toggle_always_on_top(self, state):
         if state == Qt.CheckState.Checked.value:
